@@ -3,7 +3,6 @@ package internxt
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -121,11 +120,10 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		return nil, err
 	}
 
-	// cfg.RootFolderID = accessResponse.User.RootFolderID
-
 	f := &Fs{
 		name:           name,
 		root:           root,
+		rootID:         accessResponse.User.RootFolderID,
 		opt:            *opt,
 		cfg:            cfg,
 		loginResponse:  loginResponse,
@@ -135,21 +133,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	f.features = (&fs.Features{
 		ReadMetadata:            false,
 		CanHaveEmptyDirectories: false,
-		BucketBased:             false,
 	})
 
-	f.Encoding = encoder.EncodeBackSlash // | encoder.EncodeInvalidUtf8
-	// f.Encoding = encoder.Display | encoder.EncodeBackSlash | encoder.EncodeInvalidUtf8
-	/*
-		f.Encoding = encoder.EncodeInvalidUtf8 |
-			encoder.EncodeSlash |
-			encoder.EncodeCtl |
-			encoder.EncodeDel |
-			encoder.EncodeBackSlash |
-			encoder.EncodeRightPeriod
-	*/
+	f.Encoding = encoder.EncodeBackSlash
 
-	f.dirCache = dircache.New("", cfg.RootFolderID, f)
+	f.dirCache = dircache.New("", f.rootID, f)
 
 	if root != "" {
 		parent, leaf := path.Split(root)
@@ -166,14 +154,6 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		f.root = root
 		f.rootID = dirID
 		f.dirCache.Put(root, dirID)
-
-		/*
-			if err != nil {
-				f.dirCache = dircache.New("", f.cfg.RootFolderID, f)
-			} else {
-				f.dirCache = dircache.New("", dirID, f)
-			}
-		*/
 
 		files, err := folders.ListFiles(f.cfg, dirID, folders.ListOptions{})
 		if err != nil {
@@ -557,10 +537,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 // Remove deletes a file
 func (o *Object) Remove(ctx context.Context) error {
-	err := files.DeleteFile(o.f.cfg, o.uuid)
-	fmt.Println("REMOVEERROR")
-	fmt.Println(err)
-	return nil
+	return files.DeleteFile(o.f.cfg, o.uuid)
 }
 
 func (f *Fs) EncodePath(path string) string {

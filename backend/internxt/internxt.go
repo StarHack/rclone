@@ -3,7 +3,6 @@ package internxt
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"path"
 	"path/filepath"
@@ -138,6 +137,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	f := &Fs{
 		name:           name,
 		root:           root,
+		rootID:         accessResponse.User.RootFolderID,
 		opt:            *opt,
 		cfg:            cfg,
 		loginResponse:  loginResponse,
@@ -172,6 +172,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		tempF.root = newRoot
 		// Make new Fs which is the parent
 		err = tempF.dirCache.FindRoot(ctx, false)
+    
 		if err != nil {
 			// No root so return old f
 			return f, nil

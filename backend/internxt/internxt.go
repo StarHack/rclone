@@ -20,6 +20,7 @@ import (
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/config/obscure"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/list"
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/encoder"
 )
@@ -322,6 +323,16 @@ func (f *Fs) CreateDir(ctx context.Context, pathID, leaf string) (string, error)
 	return resp.UUID, nil
 }
 
+func newDirWithFolder(remote string, folder internxtclient.Folder) *fs.Dir {
+	dir := fs.NewDir(remote, folder.ModificationTime)
+	dir.SetID(folder.UUID)
+	dir.SetItems(int64(len(folder.Children) + len(folder.Files)))
+	dir.SetSize(folder.Size)
+	dir.SetParentID(folder.ParentUUID)
+
+	return dir
+}
+
 // List lists a directory
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	dirID, err := f.dirCache.FindDir(ctx, dir, false)
@@ -336,7 +347,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	}
 	for _, e := range foldersList {
 		remote := filepath.Join(dir, f.opt.Encoding.ToStandardName(e.PlainName))
-		out = append(out, fs.NewDir(remote, e.ModificationTime))
+		out = append(out, newDirWithFolder(remote, e))
 	}
 	filesList, err := f.client.Folders.ListAllFiles(dirID)
 	if err != nil {
@@ -353,6 +364,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 			remote = strings.TrimSuffix(remote, EMPTY_FILE_EXT)
 			e.Size = "0"
 		}
+
 		out = append(out, newObjectWithFile(f, remote, &e))
 	}
 	return out, nil
@@ -540,6 +552,7 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		if f.opt.Encoding.ToStandardName(name) == filepath.Base(remote) {
 			return newObjectWithFile(f, remote, &e), nil
 		}
+
 		// If we are simulating empty files, check for a file with the special suffix and if found return it as if empty.
 		if f.opt.SimulateEmptyFiles {
 			if f.opt.Encoding.ToStandardName(name) == filepath.Base(remote+EMPTY_FILE_EXT) {
@@ -547,6 +560,7 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 				return newObjectWithFile(f, remote, &e), nil
 			}
 		}
+
 	}
 	return nil, fs.ErrorObjectNotFound
 }
@@ -715,4 +729,65 @@ func (o *Object) Remove(ctx context.Context) error {
 	err := o.f.client.Files.DeleteFile(o.uuid)
 	time.Sleep(500 * time.Millisecond) // REMOVE THIS, use pacer to check for consistency?
 	return err
+}
+
+// ListR lists the objects and directories of the Fs starting
+// from dir recursively into out.
+func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	list := list.NewHelper(callback)
+
+	directoryID, err := f.dirCache.FindDir(ctx, dir, false)
+	if err != nil {
+		return err
+	}
+
+	tree, err := f.client.Folders.Tree(directoryID)
+	if err != nil {
+		return err
+	}
+
+	var walk func(folder internxtclient.Folder, prefix string) error
+	walk = func(folder internxtclient.Folder, prefix string) error {
+
+		// add files
+		for _, file := range folder.Files {
+			remote := file.PlainName
+			if len(file.Type) > 0 {
+				remote += "." + file.Type
+			}
+			remote = path.Join(f.opt.Encoding.ToStandardPath(prefix), f.opt.Encoding.ToStandardName(remote))
+			// If we found a file with the special empty file suffix, pretend that it's empty
+			if f.opt.SimulateEmptyFiles && strings.HasSuffix(remote, EMPTY_FILE_EXT) {
+				remote = strings.TrimSuffix(remote, EMPTY_FILE_EXT)
+				file.Size = "0"
+			}
+			if err := list.Add(newObjectWithFile(f, remote, &file)); err != nil {
+				return err
+			}
+		}
+
+		// add folders
+		for _, child := range folder.Children {
+			remote := path.Join(f.opt.Encoding.ToStandardPath(prefix), f.opt.Encoding.ToStandardName(child.PlainName))
+			if err := list.Add(newDirWithFolder(remote, child)); err != nil {
+				return err
+			}
+		}
+
+		// recurse into subfolders
+		for _, child := range folder.Children {
+			if err := walk(child, path.Join(prefix, child.PlainName)); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	// start from the root folder
+	if err := walk(*tree, dir); err != nil {
+		return err
+	}
+
+	return list.Flush()
 }
